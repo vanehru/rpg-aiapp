@@ -121,9 +121,10 @@ rpg-aiapp/
 ├── tests/
 │   └── app.test.ts  # API tests
 ├── package.json
-├── tsconfig.json
+├── tsconfig.json         # Base TypeScript config (includes tests for IDE)
+├── tsconfig.build.json   # Build-specific TypeScript config
 ├── jest.config.js
-├── .eslintrc.json
+├── eslint.config.js
 ├── .prettierrc
 └── README.md
 ```
