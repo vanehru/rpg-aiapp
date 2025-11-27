@@ -1,0 +1,583 @@
+# Get current public IP address for Key Vault access during deployment
+data "http" "current_ip" {
+  url = "https://api.ipify.org?format=text"
+}
+
+resource "azurerm_resource_group" "rg" {
+  name     = var.azurerm_resource_group_name
+  location = var.azurerm_resource_group_location
+
+  tags = {
+    project_owner = "ootsuka"
+    author        = "Nehru"
+    environment   = "development"
+  }
+}
+
+# VNet and subnets
+resource "azurerm_virtual_network" "vnet" {
+  name                = "demo-rpg-vnet"
+  address_space       = var.vnet_address_space
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+
+  tags = {
+    project_owner = "ootsuka"
+    author        = "Nehru"
+    environment   = "development"
+  }
+}
+
+# Subnet 1: App Subnet (for Function App VNet integration)
+resource "azurerm_subnet" "app_subnet" {
+  name                 = "app-subnet"
+  resource_group_name  = azurerm_resource_group.rg.name
+  virtual_network_name = azurerm_virtual_network.vnet.name
+  address_prefixes     = [var.app_subnet_cidr]
+
+  service_endpoints = ["Microsoft.Web", "Microsoft.KeyVault", "Microsoft.CognitiveServices"]
+
+  delegation {
+    name = "delegation"
+    service_delegation {
+      name = "Microsoft.Web/serverFarms"
+      actions = [
+        "Microsoft.Network/virtualNetworks/subnets/action",
+      ]
+    }
+  }
+}
+
+# Subnet 2: Storage Subnet (Storage Account Private Endpoint)
+resource "azurerm_subnet" "storage_subnet" {
+  name                 = "storage-subnet"
+  resource_group_name  = azurerm_resource_group.rg.name
+  virtual_network_name = azurerm_virtual_network.vnet.name
+  address_prefixes     = [var.storage_subnet_cidr]
+
+  service_endpoints = ["Microsoft.Storage"]
+}
+
+# Subnet 3: Key Vault Subnet (Key Vault Private Endpoint)
+resource "azurerm_subnet" "keyvault_subnet" {
+  name                 = "keyvault-subnet"
+  resource_group_name  = azurerm_resource_group.rg.name
+  virtual_network_name = azurerm_virtual_network.vnet.name
+  address_prefixes     = [var.keyvault_subnet_cidr]
+  service_endpoints    = ["Microsoft.KeyVault"]
+}
+
+# Subnet 4: Database Subnet (SQL Database Private Endpoint)
+resource "azurerm_subnet" "database_subnet" {
+  name                 = "database-subnet"
+  resource_group_name  = azurerm_resource_group.rg.name
+  virtual_network_name = azurerm_virtual_network.vnet.name
+  address_prefixes     = [var.database_subnet_cidr]
+
+  service_endpoints = ["Microsoft.Sql"]
+}
+
+# Subnet 5: OpenAI Subnet (OpenAI Service Access)
+resource "azurerm_subnet" "openai_subnet" {
+  name                 = "openai-subnet"
+  resource_group_name  = azurerm_resource_group.rg.name
+  virtual_network_name = azurerm_virtual_network.vnet.name
+  address_prefixes     = [var.openai_subnet_cidr]
+  service_endpoints    = ["Microsoft.CognitiveServices"]
+}
+
+# Subnet 6: Deployment Subnet (Cloud Shell Container Instance)
+resource "azurerm_subnet" "deployment_subnet" {
+  name                 = "deployment-subnet"
+  resource_group_name  = azurerm_resource_group.rg.name
+  virtual_network_name = azurerm_virtual_network.vnet.name
+  address_prefixes     = [var.deployment_subnet_cidr]
+  service_endpoints    = ["Microsoft.Storage"] # Required for Cloud Shell storage account
+
+  delegation {
+    name = "container-delegation"
+    service_delegation {
+      name = "Microsoft.ContainerInstance/containerGroups"
+      actions = [
+        "Microsoft.Network/virtualNetworks/subnets/action"
+      ]
+    }
+  }
+}
+
+# ============================================
+# Network Security Groups (NSGs)
+# ============================================
+
+# NSG for App Subnet (Function App)
+resource "azurerm_network_security_group" "app_nsg" {
+  name                = "app-subnet-nsg"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+
+  # Allow HTTPS inbound
+  security_rule {
+    name                       = "AllowHTTPSInbound"
+    priority                   = 100
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "443"
+    source_address_prefix      = "*"
+    destination_address_prefix = "*"
+  }
+
+  # Allow Azure Load Balancer
+  security_rule {
+    name                       = "AllowAzureLoadBalancer"
+    priority                   = 110
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "*"
+    source_port_range          = "*"
+    destination_port_range     = "*"
+    source_address_prefix      = "AzureLoadBalancer"
+    destination_address_prefix = "*"
+  }
+
+  # Deny all other inbound
+  security_rule {
+    name                       = "DenyAllInbound"
+    priority                   = 4096
+    direction                  = "Inbound"
+    access                     = "Deny"
+    protocol                   = "*"
+    source_port_range          = "*"
+    destination_port_range     = "*"
+    source_address_prefix      = "*"
+    destination_address_prefix = "*"
+  }
+
+  tags = {
+    project_owner = "ootsuka"
+    author        = "Nehru"
+    environment   = "development"
+  }
+}
+
+# NSG for Storage Subnet
+resource "azurerm_network_security_group" "storage_nsg" {
+  name                = "storage-subnet-nsg"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+
+  # Allow storage traffic from VNet
+  security_rule {
+    name                       = "AllowStorageFromVNet"
+    priority                   = 100
+    direction                  = "Outbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "443"
+    source_address_prefix      = "VirtualNetwork"
+    destination_address_prefix = "Storage"
+  }
+
+  tags = {
+    project_owner = "ootsuka"
+    author        = "Nehru"
+    environment   = "development"
+  }
+}
+
+# NSG for Key Vault Subnet
+resource "azurerm_network_security_group" "keyvault_nsg" {
+  name                = "keyvault-subnet-nsg"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+
+  # Allow Key Vault traffic from VNet
+  security_rule {
+    name                       = "AllowKeyVaultFromVNet"
+    priority                   = 100
+    direction                  = "Outbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "443"
+    source_address_prefix      = "VirtualNetwork"
+    destination_address_prefix = "AzureKeyVault"
+  }
+
+  tags = {
+    project_owner = "ootsuka"
+    author        = "Nehru"
+    environment   = "development"
+  }
+}
+
+# NSG for Database Subnet
+resource "azurerm_network_security_group" "database_nsg" {
+  name                = "database-subnet-nsg"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+
+  # Allow SQL traffic from App Subnet
+  security_rule {
+    name                       = "AllowSQLFromAppSubnet"
+    priority                   = 100
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "1433"
+    source_address_prefix      = var.app_subnet_cidr
+    destination_address_prefix = "*"
+  }
+
+  # Deny all other inbound
+  security_rule {
+    name                       = "DenyAllInbound"
+    priority                   = 4096
+    direction                  = "Inbound"
+    access                     = "Deny"
+    protocol                   = "*"
+    source_port_range          = "*"
+    destination_port_range     = "*"
+    source_address_prefix      = "*"
+    destination_address_prefix = "*"
+  }
+
+  tags = {
+    project_owner = "ootsuka"
+    author        = "Nehru"
+    environment   = "development"
+  }
+}
+
+# NSG for OpenAI Subnet
+resource "azurerm_network_security_group" "openai_nsg" {
+  name                = "openai-subnet-nsg"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+
+  # Allow OpenAI traffic from App Subnet
+  security_rule {
+    name                       = "AllowOpenAIFromAppSubnet"
+    priority                   = 100
+    direction                  = "Outbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "443"
+    source_address_prefix      = var.app_subnet_cidr
+    destination_address_prefix = "CognitiveServicesManagement"
+  }
+
+  tags = {
+    project_owner = "ootsuka"
+    author        = "Nehru"
+    environment   = "development"
+  }
+}
+
+# ============================================
+# NSG Subnet Associations
+# ============================================
+
+resource "azurerm_subnet_network_security_group_association" "app_nsg_assoc" {
+  subnet_id                 = azurerm_subnet.app_subnet.id
+  network_security_group_id = azurerm_network_security_group.app_nsg.id
+}
+
+resource "azurerm_subnet_network_security_group_association" "storage_nsg_assoc" {
+  subnet_id                 = azurerm_subnet.storage_subnet.id
+  network_security_group_id = azurerm_network_security_group.storage_nsg.id
+}
+
+resource "azurerm_subnet_network_security_group_association" "keyvault_nsg_assoc" {
+  subnet_id                 = azurerm_subnet.keyvault_subnet.id
+  network_security_group_id = azurerm_network_security_group.keyvault_nsg.id
+}
+
+resource "azurerm_subnet_network_security_group_association" "database_nsg_assoc" {
+  subnet_id                 = azurerm_subnet.database_subnet.id
+  network_security_group_id = azurerm_network_security_group.database_nsg.id
+}
+
+resource "azurerm_subnet_network_security_group_association" "openai_nsg_assoc" {
+  subnet_id                 = azurerm_subnet.openai_subnet.id
+  network_security_group_id = azurerm_network_security_group.openai_nsg.id
+}
+
+# Random string for unique resource names
+resource "random_string" "suffix" {
+  length  = 6
+  special = false
+  upper   = false
+}
+
+# Random password for SQL Server
+resource "random_password" "sql_admin_password" {
+  length  = 16
+  special = true
+}
+
+# Function App Module - Consumption Plan (Y1) with .NET stack
+module "function_app" {
+  source = "./modules/function-app"
+
+  function_app_name                = "demo-rpg-func-${random_string.suffix.result}"
+  location                         = azurerm_resource_group.rg.location
+  resource_group_name              = azurerm_resource_group.rg.name
+  storage_account_name             = "rpgfuncstor${random_string.suffix.result}"
+  storage_account_tier             = "Standard"
+  storage_account_replication_type = "LRS"
+  app_service_plan_name            = "demo-rpg-consumption-plan"
+  app_service_plan_sku             = "Y1" # Consumption plan - quota approved
+
+  # Managed Identity for Key Vault access (works on Consumption plan)
+  create_managed_identity = true
+
+  # VNet integration NOT supported on Consumption plan (Y1)
+  enable_vnet_integration = false
+  vnet_route_all_enabled  = false
+
+  # Storage Account - Public access required for Consumption plan
+  storage_public_network_access_enabled = true
+  storage_network_default_action        = "Allow"
+  enable_storage_private_endpoint       = false
+
+  # .NET 8.0 Isolated runtime for C# Azure Functions
+  application_stack = {
+    dotnet_version              = "8.0"
+    use_dotnet_isolated_runtime = true
+  }
+
+  app_settings = {
+    "WEBSITE_RUN_FROM_PACKAGE"    = "1"
+    "FUNCTIONS_WORKER_RUNTIME"    = "dotnet-isolated"
+    "KEY_VAULT_URI"               = module.key_vault.key_vault_uri
+    "SQL_CONNECTION_SECRET"       = "sql-connection-string"
+    "OPENAI_ENDPOINT_SECRET"      = "openai-endpoint"
+    "OPENAI_KEY_SECRET"           = "openai-key"
+    "WEBSITE_USE_PLACEHOLDER_DOTNETISOLATED" = "1"
+  }
+
+  tags = {
+    project_owner = "ootsuka"
+    author        = "Nehru"
+    environment   = "development"
+  }
+}
+
+# Key Vault Module
+module "key_vault" {
+  source = "./modules/key-vault"
+
+  key_vault_name              = "demo-rpgkv-${random_string.suffix.result}"
+  location                    = azurerm_resource_group.rg.location
+  resource_group_name         = azurerm_resource_group.rg.name
+  tenant_id                   = data.azurerm_client_config.current.tenant_id
+  sku_name                    = "standard"
+  purge_protection_enabled    = false
+  network_acls_default_action = "Deny"
+  network_acls_bypass         = "AzureServices"
+  allowed_subnet_ids          = [azurerm_subnet.app_subnet.id, azurerm_subnet.keyvault_subnet.id]
+  allowed_ip_addresses        = [data.http.current_ip.response_body]
+
+  access_policies = [
+    # Function App access policy
+    {
+      object_id          = module.function_app.function_app_identity_principal_id
+      secret_permissions = ["Get", "List"]
+    },
+    # Administrator access policy - full management permissions
+    {
+      object_id          = data.azurerm_client_config.current.object_id
+      secret_permissions = ["Get", "List", "Set", "Delete", "Purge", "Recover"]
+    }
+  ]
+
+  # Store SQL and OpenAI secrets
+  secrets = {
+    "sql-connection-string" = module.sql_database.connection_string
+    "sql-username"          = module.sql_database.admin_username
+    "sql-server-fqdn"       = module.sql_database.sql_server_fqdn
+    "sql-database-name"     = module.sql_database.sql_database_name
+    "openai-endpoint"       = module.openai.openai_endpoint
+    "openai-key"            = module.openai.openai_primary_key
+  }
+
+  depends_on = [
+    module.sql_database,
+    module.openai
+  ]
+
+  # Public access with service endpoints (no private endpoint for now)
+  enable_private_endpoint    = false
+  private_endpoint_subnet_id = azurerm_subnet.keyvault_subnet.id
+  create_private_dns_zone    = false
+  virtual_network_id         = azurerm_virtual_network.vnet.id
+
+  tags = {
+    project_owner = "ootsuka"
+    author        = "Nehru"
+    environment   = "development"
+  }
+}
+
+# SQL Database Module
+module "sql_database" {
+  source = "./modules/sql-database"
+
+  sql_server_name               = "rpg-sql-${random_string.suffix.result}"
+  database_name                 = "rpg-gaming-db"
+  location                      = azurerm_resource_group.rg.location
+  resource_group_name           = azurerm_resource_group.rg.name
+  admin_username                = "sqladmin"
+  admin_password                = random_password.sql_admin_password.result
+  sql_server_version            = "12.0"
+  minimum_tls_version           = "1.2"
+  public_network_access_enabled = true  # Public access with service endpoints
+  sku_name                      = "Basic"
+  max_size_gb                   = 2
+  allow_azure_services          = true  # Allow Azure services (Function App)
+  enable_vnet_rule              = true  # Enable VNet rule for subnet access
+  subnet_id                     = azurerm_subnet.database_subnet.id  # VNet rule for subnet access
+  # Private endpoint disabled - will implement later
+  enable_private_endpoint    = false
+  private_endpoint_subnet_id = azurerm_subnet.database_subnet.id
+  create_private_dns_zone    = false
+  virtual_network_id         = azurerm_virtual_network.vnet.id
+
+  tags = {
+    project_owner = "ootsuka"
+    author        = "Nehru"
+    environment   = "development"
+  }
+}
+
+# OpenAI Module
+module "openai" {
+  source = "./modules/openai"
+
+  openai_account_name           = "rpg-openai-${random_string.suffix.result}"
+  location                      = "East US"
+  resource_group_name           = azurerm_resource_group.rg.name
+  sku_name                      = "S0"
+  public_network_access_enabled = true  # Public access with network ACLs
+  
+  # Network ACLs - restrict to specific subnet and IP (more secure)
+  enable_network_acls         = true
+  network_acls_default_action = "Deny"
+  allowed_subnet_id           = azurerm_subnet.app_subnet.id
+  allowed_ip_ranges           = [data.http.current_ip.response_body]
+  
+  enable_private_endpoint    = false # Public access mode
+  private_endpoint_subnet_id = azurerm_subnet.openai_subnet.id
+  create_private_dns_zone    = false
+  virtual_network_id         = azurerm_virtual_network.vnet.id
+
+  # OpenAI model deployments commented out - all versions deprecated as of 11/14/2025
+  # Testing infrastructure without OpenAI models
+  deployments = {}
+
+  tags = {
+    project_owner = "ootsuka"
+    author        = "Nehru"
+    environment   = "development"
+  }
+}
+
+# Static Web App Module
+module "static_web_app" {
+  source = "./modules/static-web-app"
+
+  static_web_app_name = "rpg-gaming-web-${random_string.suffix.result}"
+  location            = "East Asia"
+  resource_group_name = azurerm_resource_group.rg.name
+  sku_tier            = "Standard"
+  sku_size            = "Standard"
+
+  # Link to Function App backend
+  # Note: Set to null for initial deployment to avoid count dependency issues
+  # After initial deployment, you can link manually or uncomment the line below
+  # function_app_id = module.function_app.function_app_id
+  function_app_id = null
+
+  tags = {
+    project_owner = "ootsuka"
+    author        = "Nehru"
+    environment   = "development"
+  }
+}
+
+# Storage Account for Cloud Shell (user files and persistence)
+resource "azurerm_storage_account" "cloud_shell" {
+  name                     = "cloudshell${random_string.suffix.result}"
+  resource_group_name      = azurerm_resource_group.rg.name
+  location                 = azurerm_resource_group.rg.location
+  account_tier             = "Standard"
+  account_replication_type = "LRS"
+
+  # Allow public access for Cloud Shell - it needs internet connectivity
+  # network_rules removed to allow default public access
+
+  tags = {
+    project_owner = "ootsuka"
+    author        = "Nehru"
+    environment   = "development"
+    purpose       = "cloud-shell-storage"
+  }
+}
+
+# File share for Cloud Shell persistence
+resource "azurerm_storage_share" "cloud_shell" {
+  name                 = "cloudshell"
+  storage_account_name = azurerm_storage_account.cloud_shell.name
+  quota                = 6 # 6 GB for Cloud Shell
+}
+
+# Container Instance for Cloud Shell VNet relay - Commented out due to missing port configuration
+# resource "azurerm_container_group" "cloud_shell_relay" {
+#   name                = "cloudshell-relay"
+#   location            = azurerm_resource_group.rg.location
+#   resource_group_name = azurerm_resource_group.rg.name
+#   os_type             = "Linux"
+#
+#   # Network configuration
+#   subnet_ids = [azurerm_subnet.deployment_subnet.id]
+#
+#   # Identity for Azure authentication
+#   identity {
+#     type = "SystemAssigned"
+#   }
+#
+#   container {
+#     name   = "cloud-shell-relay"
+#     image  = "mcr.microsoft.com/azure-cli:latest"
+#     cpu    = "0.5"
+#     memory = "1.5"
+#
+#     # Keep container running
+#     commands = [
+#       "/bin/sh",
+#       "-c",
+#       "while true; do sleep 3600; done"
+#     ]
+#
+#     # Environment variables for Azure tools
+#     environment_variables = {
+#       "AZURE_SUBSCRIPTION_ID" = data.azurerm_client_config.current.subscription_id
+#     }
+#   }
+#
+#   tags = {
+#     project_owner = "ootsuka"
+#     author        = "Nehru"
+#     environment   = "development"
+#     purpose       = "cloud-shell-vnet-relay"
+#   }
+# }
+
+# Get Azure AD info for access policies
+data "azurerm_client_config" "current" {}
+
